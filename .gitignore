@@ -1,0 +1,613 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+const CANVAS_WIDTH = 1400;
+const CANVAS_HEIGHT = 900;
+
+const makeId = () => {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+};
+
+const deepClone = (value) => JSON.parse(JSON.stringify(value));
+
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+const initialAdjustments = {
+  brightness: 100,
+  contrast: 100,
+  saturation: 100,
+  grayscale: 0,
+  sepia: 0,
+  hue: 0,
+  blur: 0,
+  invert: 0,
+};
+
+const initialLayers = [
+  {
+    id: 'text-1',
+    name: 'Headline',
+    type: 'text',
+    visible: true,
+    opacity: 100,
+    x: 180,
+    y: 160,
+    fontSize: 72,
+    color: '#ffffff',
+    text: 'Photo Editor Pro',
+  },
+  {
+    id: 'brush-1',
+    name: 'Glow Brush',
+    type: 'brush',
+    visible: true,
+    opacity: 100,
+    strokes: [
+      {
+        color: '#f97316',
+        size: 22,
+        points: [
+          { x: 290, y: 550 },
+          { x: 340, y: 510 },
+          { x: 400, y: 480 },
+          { x: 470, y: 470 },
+          { x: 540, y: 520 },
+        ],
+      },
+    ],
+  },
+];
+
+function App() {
+  const canvasRef = useRef(null);
+  const imageRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  const [baseImage, setBaseImage] = useState(null);
+  const [tool, setTool] = useState('move');
+  const [zoom, setZoom] = useState(1);
+  const [layers, setLayers] = useState(initialLayers);
+  const [activeLayerId, setActiveLayerId] = useState('text-1');
+  const [adjustments, setAdjustments] = useState(initialAdjustments);
+  const [history, setHistory] = useState([{ layers: deepClone(initialLayers), adjustments: { ...initialAdjustments } }]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [textInput, setTextInput] = useState('Photo Editor Pro');
+  const [brushColor, setBrushColor] = useState('#f97316');
+  const [brushSize, setBrushSize] = useState(18);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [pendingStroke, setPendingStroke] = useState(null);
+  const [showGrid, setShowGrid] = useState(true);
+
+  const activeLayer = useMemo(
+    () => layers.find((layer) => layer.id === activeLayerId) || null,
+    [layers, activeLayerId],
+  );
+
+  const filterString = useMemo(() => {
+    const { brightness, contrast, saturation, grayscale, sepia, hue, blur, invert } = adjustments;
+    return `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) grayscale(${grayscale}%) sepia(${sepia}%) hue-rotate(${hue}deg) blur(${blur}px) invert(${invert}%)`;
+  }, [adjustments]);
+
+  const updateHistory = (nextLayers, nextAdjustments) => {
+    setHistory((prev) => {
+      const trimmed = prev.slice(0, historyIndex + 1);
+      const snapshot = { layers: deepClone(nextLayers), adjustments: { ...nextAdjustments } };
+      const next = [...trimmed, snapshot];
+      if (next.length > 30) next.shift();
+      return next;
+    });
+    setHistoryIndex((prev) => Math.min(prev + 1, 29));
+  };
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    canvas.width = CANVAS_WIDTH;
+    canvas.height = CANVAS_HEIGHT;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0b1220';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (showGrid) {
+      drawGrid(ctx, canvas.width, canvas.height);
+    }
+
+    const image = imageRef.current;
+    if (image) {
+      const ratio = Math.min(canvas.width / image.width, canvas.height / image.height);
+      const drawWidth = image.width * ratio;
+      const drawHeight = image.height * ratio;
+      const x = (canvas.width - drawWidth) / 2;
+      const y = (canvas.height - drawHeight) / 2;
+
+      ctx.save();
+      ctx.filter = filterString;
+      ctx.drawImage(image, x, y, drawWidth, drawHeight);
+      ctx.restore();
+    }
+
+    layers.forEach((layer) => {
+      if (!layer.visible) return;
+
+      ctx.save();
+      ctx.globalAlpha = layer.opacity / 100;
+
+      if (layer.type === 'text') {
+        ctx.font = `${layer.fontSize}px Inter, 'Segoe UI', sans-serif`;
+        ctx.fillStyle = layer.color;
+        ctx.textBaseline = 'top';
+        ctx.fillText(layer.text, layer.x, layer.y);
+      }
+
+      if (layer.type === 'brush') {
+        layer.strokes?.forEach((stroke) => {
+          if (!stroke || stroke.points.length === 0) return;
+          ctx.beginPath();
+          ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+          stroke.points.slice(1).forEach((point) => {
+            ctx.lineTo(point.x, point.y);
+          });
+          ctx.strokeStyle = stroke.color;
+          ctx.lineWidth = stroke.size;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke();
+        });
+      }
+
+      ctx.restore();
+    });
+
+    if (!baseImage) {
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.16)';
+      ctx.fillRect(40, 40, canvas.width - 80, canvas.height - 80);
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      ctx.strokeRect(40, 40, canvas.width - 80, canvas.height - 80);
+    }
+  }, [baseImage, layers, filterString, showGrid, tool]);
+
+  useEffect(() => {
+    if (!baseImage) return;
+    const img = new Image();
+    img.onload = () => {
+      imageRef.current = img;
+    };
+    img.src = baseImage;
+  }, [baseImage]);
+
+  const pushSnapshot = (nextLayers = layers, nextAdjustments = adjustments) => {
+    const snapshot = { layers: deepClone(nextLayers), adjustments: { ...nextAdjustments } };
+    setHistory((prev) => {
+      const trimmed = prev.slice(0, historyIndex + 1);
+      const merged = [...trimmed, snapshot];
+      if (merged.length > 30) merged.shift();
+      return merged;
+    });
+    setHistoryIndex((prev) => Math.min(prev + 1, 29));
+  };
+
+  const undo = () => {
+    setHistoryIndex((prev) => {
+      const nextIndex = clamp(prev - 1, 0, history.length - 1);
+      const snapshot = history[nextIndex];
+      if (snapshot) {
+        setLayers(deepClone(snapshot.layers));
+        setAdjustments({ ...snapshot.adjustments });
+      }
+      return nextIndex;
+    });
+  };
+
+  const redo = () => {
+    setHistoryIndex((prev) => {
+      const nextIndex = clamp(prev + 1, 0, history.length - 1);
+      const snapshot = history[nextIndex];
+      if (snapshot) {
+        setLayers(deepClone(snapshot.layers));
+        setAdjustments({ ...snapshot.adjustments });
+      }
+      return nextIndex;
+    });
+  };
+
+  const onImageUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setBaseImage(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const addTextLayer = () => {
+    const newLayer = {
+      id: makeId(),
+      name: 'Text Layer',
+      type: 'text',
+      visible: true,
+      opacity: 100,
+      x: 200,
+      y: 180,
+      fontSize: 60,
+      color: '#ffffff',
+      text: textInput || 'New Layer',
+    };
+
+    const next = [...layers, newLayer];
+    setLayers(next);
+    setActiveLayerId(newLayer.id);
+    setTool('move');
+    pushSnapshot(next, adjustments);
+  };
+
+  const addBrushLayer = () => {
+    const newLayer = {
+      id: makeId(),
+      name: 'Brush Layer',
+      type: 'brush',
+      visible: true,
+      opacity: 100,
+      strokes: [],
+    };
+
+    const next = [...layers, newLayer];
+    setLayers(next);
+    setActiveLayerId(newLayer.id);
+    setTool('brush');
+    pushSnapshot(next, adjustments);
+  };
+
+  const updateLayer = (layerId, updateFn) => {
+    setLayers((prev) => {
+      const next = prev.map((layer) => (layer.id === layerId ? updateFn(layer) : layer));
+      return next;
+    });
+  };
+
+  const removeLayer = (layerId) => {
+    const next = layers.filter((layer) => layer.id !== layerId);
+    setLayers(next);
+    if (activeLayerId === layerId) {
+      setActiveLayerId(next[0]?.id || null);
+    }
+    pushSnapshot(next, adjustments);
+  };
+
+  const duplicateLayer = (layerId) => {
+    const source = layers.find((layer) => layer.id === layerId);
+    if (!source) return;
+
+    const duplicate = {
+      ...deepClone(source),
+      id: makeId(),
+      name: `${source.name} Copy`,
+      x: (source.x || 0) + 25,
+      y: (source.y || 0) + 25,
+    };
+
+    const next = [...layers, duplicate];
+    setLayers(next);
+    setActiveLayerId(duplicate.id);
+    pushSnapshot(next, adjustments);
+  };
+
+  const updateAdjustment = (key, value) => {
+    const next = { ...adjustments, [key]: value };
+    setAdjustments(next);
+    pushSnapshot(layers, next);
+  };
+
+  const getCanvasCoordinates = (event) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+    const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+    return { x, y };
+  };
+
+  const handlePointerDown = (event) => {
+    const pos = getCanvasCoordinates(event);
+
+    if (tool === 'brush' || tool === 'eraser') {
+      const target = activeLayer?.type === 'brush'
+        ? activeLayer.id
+        : layers.find((layer) => layer.type === 'brush')?.id;
+
+      let nextLayerId = target;
+      let nextLayers = layers;
+
+      if (!nextLayerId) {
+        const newLayer = {
+          id: makeId(),
+          name: tool === 'eraser' ? 'Eraser Layer' : 'Brush Layer',
+          type: 'brush',
+          visible: true,
+          opacity: 100,
+          strokes: [],
+        };
+        nextLayerId = newLayer.id;
+        nextLayers = [...layers, newLayer];
+        setLayers(nextLayers);
+        setActiveLayerId(newLayer.id);
+      }
+
+      const stroke = {
+        color: tool === 'eraser' ? 'rgba(0,0,0,0)' : brushColor,
+        size: brushSize,
+        points: [{ x: pos.x, y: pos.y }],
+      };
+
+      setPendingStroke(stroke);
+      setIsDrawing(true);
+
+      setLayers((currentLayers) => {
+        const updated = currentLayers.map((layer) => {
+          if (layer.id !== nextLayerId) return layer;
+          return {
+            ...layer,
+            strokes: [...(layer.strokes || []), stroke],
+          };
+        });
+        return updated;
+      });
+    }
+  };
+
+  const handlePointerMove = (event) => {
+    if (!isDrawing || !pendingStroke) return;
+
+    const pos = getCanvasCoordinates(event);
+    setPendingStroke((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        points: [...prev.points, { x: pos.x, y: pos.y }],
+      };
+    });
+
+    setLayers((currentLayers) => {
+      const nextLayers = currentLayers.map((layer) => {
+        if (layer.id !== activeLayerId && !layer.strokes) return layer;
+        if (layer.type !== 'brush') return layer;
+
+        if (layer.id !== (activeLayer?.id || activeLayerId)) {
+          return layer;
+        }
+
+        const lastStroke = layer.strokes[layer.strokes.length - 1];
+        if (!lastStroke) return layer;
+        return {
+          ...layer,
+          strokes: [
+            ...layer.strokes.slice(0, -1),
+            {
+              ...lastStroke,
+              points: [...lastStroke.points, { x: pos.x, y: pos.y }],
+            },
+          ],
+        };
+      });
+      return nextLayers;
+    });
+  };
+
+  const handlePointerUp = () => {
+    if (!isDrawing) return;
+    setIsDrawing(false);
+    setPendingStroke(null);
+    pushSnapshot(layers, adjustments);
+  };
+
+  const exportPNG = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.download = 'photo-editor-pro.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+
+  const resetAll = () => {
+    setAdjustments(initialAdjustments);
+    setLayers(initialLayers);
+    setActiveLayerId('text-1');
+    setBaseImage(null);
+    imageRef.current = null;
+    setHistory([{ layers: deepClone(initialLayers), adjustments: { ...initialAdjustments } }]);
+    setHistoryIndex(0);
+  };
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="app-header">
+          <div>
+            <p className="eyebrow">Creative Suite</p>
+            <h1>Photo Editor Pro</h1>
+          </div>
+          <button className="secondary" onClick={resetAll}>Reset</button>
+        </div>
+
+        <div className="panel-block">
+          <label className="section-title">File</label>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={onImageUpload} />
+        </div>
+
+        <div className="panel-block">
+          <label className="section-title">Tools</label>
+          <div className="segmented-control">
+            <button className={tool === 'move' ? 'active' : ''} onClick={() => setTool('move')}>Move</button>
+            <button className={tool === 'brush' ? 'active' : ''} onClick={() => { setTool('brush'); addBrushLayer(); }}>Brush</button>
+            <button className={tool === 'eraser' ? 'active' : ''} onClick={() => { setTool('eraser'); addBrushLayer(); }}>Eraser</button>
+          </div>
+        </div>
+
+        <div className="panel-block">
+          <label className="section-title">Text</label>
+          <input
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            placeholder="Enter text"
+          />
+          <button className="primary" onClick={addTextLayer}>Add Text Layer</button>
+        </div>
+
+        <div className="panel-block">
+          <label className="section-title">Brush</label>
+          <div className="color-row">
+            <input type="color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} />
+            <span>{brushSize}px</span>
+          </div>
+          <input type="range" min={2} max={60} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
+        </div>
+
+        <div className="panel-block">
+          <label className="section-title">Adjustments</label>
+          <RangeControl label="Brightness" value={adjustments.brightness} min={0} max={200} onChange={(v) => updateAdjustment('brightness', v)} />
+          <RangeControl label="Contrast" value={adjustments.contrast} min={0} max={200} onChange={(v) => updateAdjustment('contrast', v)} />
+          <RangeControl label="Saturation" value={adjustments.saturation} min={0} max={200} onChange={(v) => updateAdjustment('saturation', v)} />
+          <RangeControl label="Grayscale" value={adjustments.grayscale} min={0} max={100} onChange={(v) => updateAdjustment('grayscale', v)} />
+          <RangeControl label="Sepia" value={adjustments.sepia} min={0} max={100} onChange={(v) => updateAdjustment('sepia', v)} />
+          <RangeControl label="Hue" value={adjustments.hue} min={0} max={360} onChange={(v) => updateAdjustment('hue', v)} />
+          <RangeControl label="Blur" value={adjustments.blur} min={0} max={20} onChange={(v) => updateAdjustment('blur', v)} />
+          <RangeControl label="Invert" value={adjustments.invert} min={0} max={100} onChange={(v) => updateAdjustment('invert', v)} />
+        </div>
+      </aside>
+
+      <main className="workspace">
+        <header className="topbar">
+          <div className="window-actions">
+            <span className="dot red" />
+            <span className="dot yellow" />
+            <span className="dot green" />
+          </div>
+
+          <div className="toolbar-group">
+            <button onClick={undo} disabled={historyIndex <= 0}>Undo</button>
+            <button onClick={redo} disabled={historyIndex >= history.length - 1}>Redo</button>
+            <button onClick={() => setShowGrid((prev) => !prev)}>{showGrid ? 'Hide Grid' : 'Show Grid'}</button>
+            <button className="primary" onClick={exportPNG}>Export PNG</button>
+          </div>
+
+          <div className="zoom-controls">
+            <button onClick={() => setZoom((prev) => clamp(prev - 0.1, 0.4, 2))}>-</button>
+            <span>{Math.round(zoom * 100)}%</span>
+            <button onClick={() => setZoom((prev) => clamp(prev + 0.1, 0.4, 2))}>+</button>
+          </div>
+        </header>
+
+        <section className="canvas-area">
+          <div className="canvas-wrapper" style={{ transform: `scale(${zoom})` }}>
+            <canvas
+              ref={canvasRef}
+              width={CANVAS_WIDTH}
+              height={CANVAS_HEIGHT}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerLeave={handlePointerUp}
+              onPointerUp={handlePointerUp}
+            />
+          </div>
+        </section>
+
+        <aside className="layers-panel">
+          <div className="panel-header">
+            <h2>Layers</h2>
+            <button className="small" onClick={addBrushLayer}>+ New Layer</button>
+          </div>
+
+          <div className="layers-list">
+            {layers.map((layer) => (
+              <div
+                key={layer.id}
+                className={`layer-item ${layer.id === activeLayerId ? 'selected' : ''}`}
+                onClick={() => setActiveLayerId(layer.id)}
+              >
+                <div className="layer-meta">
+                  <span className={`layer-badge ${layer.type}`} />
+                  <span>{layer.name}</span>
+                </div>
+
+                <div className="layer-actions">
+                  <button className="small" onClick={(e) => { e.stopPropagation(); updateLayer(layer.id, (item) => ({ ...item, visible: !item.visible })); }}> {layer.visible ? 'Hide' : 'Show'} </button>
+                  <button className="small" onClick={(e) => { e.stopPropagation(); duplicateLayer(layer.id); }}>Copy</button>
+                  <button className="small danger" onClick={(e) => { e.stopPropagation(); removeLayer(layer.id); }}>Delete</button>
+                </div>
+
+                {layer.type === 'text' && (
+                  <div className="property-row">
+                    <input
+                      value={layer.text}
+                      onChange={(e) => updateLayer(layer.id, (item) => ({ ...item, text: e.target.value }))}
+                    />
+                    <input
+                      type="color"
+                      value={layer.color}
+                      onChange={(e) => updateLayer(layer.id, (item) => ({ ...item, color: e.target.value }))}
+                    />
+                    <input
+                      type="range"
+                      min={24}
+                      max={180}
+                      value={layer.fontSize}
+                      onChange={(e) => updateLayer(layer.id, (item) => ({ ...item, fontSize: Number(e.target.value) }))}
+                    />
+                  </div>
+                )}
+
+                <div className="property-row opacity-row">
+                  <label>Opacity</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={layer.opacity}
+                    onChange={(e) => updateLayer(layer.id, (item) => ({ ...item, opacity: Number(e.target.value) }))}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
+}
+
+function RangeControl({ label, value, min, max, onChange }) {
+  return (
+    <label className="range-control">
+      <div className="range-header">
+        <span>{label}</span>
+        <strong>{value}</strong>
+      </div>
+      <input type="range" min={min} max={max} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+    </label>
+  );
+}
+
+function drawGrid(ctx, width, height) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+  ctx.lineWidth = 1;
+
+  for (let x = 0; x < width; x += 24) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+  }
+
+  for (let y = 0; y < height; y += 24) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+export default App;
